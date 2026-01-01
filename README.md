@@ -56,3 +56,59 @@ Format minimal:
   "payload": { "any": "object" }
 }
 
+---
+
+## 🔁 Idempotency & Strong Deduplication (Persisten)
+
+Dedup dilakukan di database menggunakan **constraint unik**:
+
+- Tabel `processed_events` memiliki **PRIMARY KEY (topic, event_id)**.
+- Saat consumer memproses event, dilakukan pola:
+  - `INSERT ... ON CONFLICT DO NOTHING`
+  - Jika insert sukses → event diproses & disimpan (**unique**).
+  - Jika conflict → dianggap **duplicate** dan **tidak ada side-effect ganda**.
+
+Dengan model ini, meskipun event:
+- diterima berkali-kali (**at-least-once**),
+- worker paralel memproses bersamaan,
+- container aplikasi di-restart atau di-recreate,
+
+hasil akhir tetap **konsisten** dan **unik**.
+
+---
+
+## 🔒 Transaksi & Kontrol Konkurensi (Bab 8–9)
+
+### Strategi Utama (Anti Race Condition)
+
+Pemrosesan **1 event** dilakukan dalam **satu transaksi** agar bebas race condition:
+
+1. `received` di-*increment* (atomik).
+2. Dedup gate: `INSERT` ke `processed_events`.
+3. Jika **unique** → `INSERT` ke `events` + *increment* `unique_processed`.
+4. Jika **duplicate** → *increment* `duplicate_dropped`.
+
+### Idempotent Write Pattern
+
+- `INSERT ... ON CONFLICT DO NOTHING` → dedup atomik.
+- Update counter `count = count + 1` → aman dari **lost-update**.
+
+### Isolation Level
+
+- **Dipakai:** `READ COMMITTED` (default Postgres).
+- **Alasan:** dedup & konflik ditangani oleh **unique constraint/upsert**, lebih ringan daripada `SERIALIZABLE`.
+- **Opsional:** untuk kasus **batch atomic/outbox** yang kompleks dapat dipertimbangkan `SERIALIZABLE` + retry.
+
+---
+
+## 🚀 Cara Menjalankan
+
+### Prasyarat
+
+- Docker + Docker Compose v2
+- (Opsional) k6 untuk load test
+
+### 1) Jalankan semua service
+
+```bash
+docker compose up --build
